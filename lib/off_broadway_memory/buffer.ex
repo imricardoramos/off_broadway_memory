@@ -57,6 +57,14 @@ defmodule OffBroadwayMemory.Buffer do
     GenServer.call(server, :length)
   end
 
+  @doc """
+  Checks if message has been enqueued already.
+  """
+  @spec enqueued(GenServer.server(), list(any()) | any()) :: :ok
+  def enqueued(server, message) do
+    GenServer.call(server, {:enqueued, message})
+  end
+
   @impl true
   def handle_call({:push, messages}, _from, state) when is_list(messages) do
     state = push_to_state(state, messages)
@@ -95,6 +103,10 @@ defmodule OffBroadwayMemory.Buffer do
 
   def handle_call(:length, _from, %{length: length} = state) do
     {:reply, length, state}
+  end
+
+  def handle_call({:enqueued, message}, _from, %{queue: queue} = state) do
+    {:reply, :queue.member(message, queue), state}
   end
 
   @impl true
