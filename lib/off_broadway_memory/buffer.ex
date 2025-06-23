@@ -4,8 +4,9 @@ defmodule OffBroadwayMemory.Buffer do
   """
 
   use GenServer
+  require Logger
 
-  @initial_state %{queue: :queue.new(), length: 0}
+  @initial_state %{queue: :queue.new(), seen: MapSet.new(), length: 0}
 
   @doc false
   def start_link(opts \\ []) do
@@ -57,14 +58,6 @@ defmodule OffBroadwayMemory.Buffer do
     GenServer.call(server, :length)
   end
 
-  @doc """
-  Checks if message has been enqueued already.
-  """
-  @spec enqueued(GenServer.server(), list(any()) | any()) :: :ok
-  def enqueued(server, message) do
-    GenServer.call(server, {:enqueued, message})
-  end
-
   @impl true
   def handle_call({:push, messages}, _from, state) when is_list(messages) do
     state = push_to_state(state, messages)
@@ -73,9 +66,13 @@ defmodule OffBroadwayMemory.Buffer do
   end
 
   def handle_call({:push, message}, _from, state) do
-    updated_queue = :queue.in(message, state.queue)
-
-    {:reply, :ok, %{queue: updated_queue, length: state.length + 1}}
+    if MapSet.member?(state.seen, message) do
+      {:reply, :ok, %{state | queue: state.queue}}
+    else
+      updated_queue = :queue.in(message, state.queue)
+      updated_seen = MapSet.put(state.seen, message)
+      {:reply, :ok, %{state | queue: updated_queue, length: state.length + 1, seen: updated_seen}}
+    end
   end
 
   def handle_call({:pop, _count}, _from, %{length: 0} = state) do
@@ -83,13 +80,15 @@ defmodule OffBroadwayMemory.Buffer do
   end
 
   def handle_call({:pop, count}, _from, %{length: length} = state) when count >= length do
-    {:reply, :queue.to_list(state.queue), @initial_state}
+    new_state = %{@initial_state | seen: state.seen}
+    Process.send_after(self(), :maybe_clear_seen, 60_000)
+    {:reply, :queue.to_list(state.queue), new_state}
   end
 
   def handle_call({:pop, count}, _from, state) do
     {messages, updated_queue} = :queue.split(count, state.queue)
 
-    updated_state = %{
+    updated_state = %{state |
       queue: updated_queue,
       length: state.length - count
     }
@@ -105,10 +104,6 @@ defmodule OffBroadwayMemory.Buffer do
     {:reply, length, state}
   end
 
-  def handle_call({:enqueued, message}, _from, %{queue: queue} = state) do
-    {:reply, :queue.member(message, queue), state}
-  end
-
   @impl true
   def handle_cast({:push, messages}, state) when is_list(messages) do
     state = push_to_state(state, messages)
@@ -119,15 +114,33 @@ defmodule OffBroadwayMemory.Buffer do
   def handle_cast({:push, message}, state) do
     updated_queue = :queue.in(message, state.queue)
 
-    {:noreply, %{queue: updated_queue, length: state.length + 1}}
+    {:noreply, %{state | queue: updated_queue, length: state.length + 1}}
+  end
+
+  @impl true
+  def handle_info(:maybe_clear_seen, state) do
+    if state.length == 0 do
+      # Reset seen state if queue is still empty after x amount of time
+      Logger.debug("OffBroadwayMememory Buffer cleared after 10s")
+      {:noreply, %{state | seen: MapSet.new()}}
+    else
+      {:noreply, state}
+    end
   end
 
   defp push_to_state(state, messages) do
+    messages = reject_seen(messages, state.seen)
     messages_length = Kernel.length(messages)
 
     join = :queue.from_list(messages)
     updated_queue = :queue.join(state.queue, join)
 
-    %{queue: updated_queue, length: state.length + messages_length}
+    updated_seen = MapSet.union(state.seen, MapSet.new(messages))
+
+    %{state | queue: updated_queue, length: state.length + messages_length, seen: updated_seen}
+  end
+
+  defp reject_seen(messages, seen) do
+    Enum.reject(messages, &MapSet.member?(seen, &1))
   end
 end
