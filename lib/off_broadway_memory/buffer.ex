@@ -6,7 +6,7 @@ defmodule OffBroadwayMemory.Buffer do
   use GenServer
   require Logger
 
-  @initial_state %{queue: :queue.new(), seen: MapSet.new(), length: 0}
+  @initial_state %{queue: :queue.new(), seen: MapSet.new(), length: 0, enabled?: true}
 
   @doc false
   def start_link(opts \\ []) do
@@ -58,12 +58,23 @@ defmodule OffBroadwayMemory.Buffer do
     GenServer.call(server, :length)
   end
 
+  def enable(server) do
+    GenServer.cast(server, :enable)
+  end
+
+  def disable(server) do
+    GenServer.cast(server, :disable)
+  end
+
   @impl true
   def handle_call({:push, messages}, _from, state) when is_list(messages) do
     state = push_to_state(state, messages)
 
     {:reply, :ok, state}
   end
+
+  def handle_call({:push, _message}, _from, %{enabled?: false} = state),
+    do: {:reply, :ok, state} |> dbg()
 
   def handle_call({:push, message}, _from, state) do
     if MapSet.member?(state.seen, message) do
@@ -88,20 +99,25 @@ defmodule OffBroadwayMemory.Buffer do
   def handle_call({:pop, count}, _from, state) do
     {messages, updated_queue} = :queue.split(count, state.queue)
 
-    updated_state = %{state |
-      queue: updated_queue,
-      length: state.length - count
-    }
+    updated_state = %{state | queue: updated_queue, length: state.length - count}
 
     {:reply, :queue.to_list(messages), updated_state}
   end
 
-  def handle_call(:clear, _from, _state) do
-    {:reply, :ok, @initial_state}
+  def handle_call(:clear, _from, state) do
+    {:reply, :ok, %{@initial_state | enabled?: state.enabled?}}
   end
 
   def handle_call(:length, _from, %{length: length} = state) do
     {:reply, length, state}
+  end
+
+  def handle_cast(:enable, state) do
+    {:noreply, %{state | enabled?: true}}
+  end
+
+  def handle_cast(:disable, state) do
+    {:noreply, %{state | enabled?: false}}
   end
 
   @impl true
@@ -110,6 +126,8 @@ defmodule OffBroadwayMemory.Buffer do
 
     {:noreply, state}
   end
+
+  def handle_cast({:push, _message}, %{enabled?: false} = state), do: {:noreply, state} |> dbg()
 
   def handle_cast({:push, message}, state) do
     updated_queue = :queue.in(message, state.queue)
@@ -129,7 +147,7 @@ defmodule OffBroadwayMemory.Buffer do
   end
 
   defp push_to_state(state, messages) do
-    messages = reject_seen(messages, state.seen)
+    messages = if(state.enabled?, do: reject_seen(messages, state.seen), else: [])
     messages_length = Kernel.length(messages)
 
     join = :queue.from_list(messages)
