@@ -19,11 +19,19 @@ defmodule OffBroadwayMemory.Buffer do
   end
 
   @doc """
-  Push messages to the buffer.
+  Push messages to the end of thebuffer.
   """
   @spec push(GenServer.server(), list(any()) | any()) :: :ok
   def push(server, messages) do
     GenServer.call(server, {:push, messages})
+  end
+
+  @doc """
+  Push messages to the start of the buffer.
+  """
+  @spec push(GenServer.server(), list(any()) | any()) :: :ok
+  def push_reverse(server, messages) do
+    GenServer.call(server, {:push_reverse, messages})
   end
 
   @doc """
@@ -69,6 +77,13 @@ defmodule OffBroadwayMemory.Buffer do
   @impl true
   def handle_call({:push, messages}, _from, state) when is_list(messages) do
     state = push_to_state(state, messages)
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:push_reverse, messages}, _from, state) when is_list(messages) do
+    state = push_to_state(state, messages, true)
 
     {:reply, :ok, state}
   end
@@ -146,12 +161,18 @@ defmodule OffBroadwayMemory.Buffer do
     end
   end
 
-  defp push_to_state(state, messages) do
+  defp push_to_state(state, messages, reversed \\ false) do
     messages = if(state.enabled?, do: reject_seen(messages, state.seen), else: [])
     messages_length = Kernel.length(messages)
 
     join = :queue.from_list(messages)
-    updated_queue = :queue.join(state.queue, join)
+
+    updated_queue =
+      if reversed do
+        :queue.join(join, state.queue)
+      else
+        :queue.join(state.queue, join)
+      end
 
     updated_seen = MapSet.union(state.seen, MapSet.new(messages))
 
